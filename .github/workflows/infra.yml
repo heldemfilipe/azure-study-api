@@ -34,6 +34,7 @@ defaults:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # evita que um travamento consuma o limite de minutos
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -49,6 +50,7 @@ jobs:
     # A credencial federada só vale para a branch main; PRs só validam.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # evita que um travamento consuma o limite de minutos
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -62,6 +64,7 @@ jobs:
     needs: plan
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # evita que um travamento consuma o limite de minutos
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -75,6 +78,7 @@ jobs:
     needs: plan
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # evita que um travamento consuma o limite de minutos
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
