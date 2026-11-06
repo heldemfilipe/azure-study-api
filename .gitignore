@@ -1,0 +1,17 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+tfplan
+crash.log
+# .terraform.lock.hcl DEVE ser versionado
+
+# Segredos temporários do bootstrap
+.cred.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
