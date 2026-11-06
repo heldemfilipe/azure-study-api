@@ -85,16 +85,29 @@ if [ -z "$SP_OBJ_ID" ]; then
   SP_OBJ_ID=$(az ad sp create --id "$APP_ID" --query id -o tsv | tr -d '\r')
 fi
 
+# O subject que o GitHub emite hoje usa IDs imutáveis do dono e do repositório
+# (protege contra "repo-jacking": alguém recriar o mesmo nome depois que você
+# apagar ou renomear o repo). Formato:
+#   repo:<dono>@<id_do_dono>/<repo>@<id_do_repo>:ref:refs/heads/main
+# Os IDs vêm da API do GitHub (gh). Para forçar outro valor: GITHUB_OIDC_SUBJECT=...
+if [ -z "${GITHUB_OIDC_SUBJECT:-}" ]; then
+  OWNER_ID=$(gh api "repos/${GITHUB_REPO}" --jq '.owner.id' | tr -d '\r')
+  REPO_ID=$(gh api "repos/${GITHUB_REPO}" --jq '.id' | tr -d '\r')
+  GITHUB_OIDC_SUBJECT="repo:${GITHUB_REPO%%/*}@${OWNER_ID}/${GITHUB_REPO##*/}@${REPO_ID}:ref:refs/heads/main"
+fi
+echo "Subject OIDC: $GITHUB_OIDC_SUBJECT"
+
 # Credencial federada = a "trust policy" da role na AWS. Diz: "aceite tokens
 # emitidos por este issuer, com este subject e este audience". O subject restringe
-# o login a workflows da branch main deste repositório; se não bater exato, falha.
+# o login a workflows da branch main deste repositório; se não bater EXATO, o login
+# falha com AADSTS700213 ("No matching federated identity record").
 CRED_FILE="./.cred.json"
 trap 'rm -f "$CRED_FILE"' EXIT # apaga o arquivo temporário ao sair, mesmo com erro
 cat > "$CRED_FILE" <<EOF
 {
   "name": "github-main",
   "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:${GITHUB_REPO}:ref:refs/heads/main",
+  "subject": "${GITHUB_OIDC_SUBJECT}",
   "audiences": ["api://AzureADTokenExchange"]
 }
 EOF
@@ -102,6 +115,17 @@ HAS_CRED=$(az ad app federated-credential list --id "$APP_ID" \
   --query "[?name=='github-main'] | length(@)" -o tsv | tr -d '\r')
 if [ "$HAS_CRED" = "0" ]; then
   az ad app federated-credential create --id "$APP_ID" --parameters "@${CRED_FILE}" > /dev/null
+else
+  # Já existe: atualiza (o nome não pode mudar, então ele sai do corpo do update).
+  cat > "$CRED_FILE" <<EOF
+{
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "${GITHUB_OIDC_SUBJECT}",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+EOF
+  az ad app federated-credential update --id "$APP_ID" \
+    --federated-credential-id github-main --parameters "@${CRED_FILE}" > /dev/null
 fi
 
 # ---------------------------------------------------------------------------
