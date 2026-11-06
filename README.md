@@ -37,7 +37,7 @@ GitHub Actions ──OIDC──▶ Resource group rg-azstudy-dev
 
 ## Progresso
 
-- [ ] Orçamento e conta Azure (budget de US$ 10 com alertas)
+- [x] Orçamento e conta Azure (budget de US$ 10 com alertas)
 - [ ] Bootstrap: resource groups, state em Blob e identidade do pipeline (OIDC)
 - [ ] Terraform: base (logs, ACR, identidade)
 - [ ] Terraform: Key Vault e Cosmos DB
