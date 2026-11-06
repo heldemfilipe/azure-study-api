@@ -1,0 +1,85 @@
+name: infra
+
+# push em main -> validate + plan (só leitura, para revisar)
+# manual       -> action = plan | apply | destroy (o clique é o gate de aprovação)
+on:
+  push:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/infra.yml"]
+  pull_request:
+    paths: ["infra/**"]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "O que fazer com a infraestrutura"
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+
+permissions:
+  id-token: write # permite pedir o token OIDC que troca por acesso na Azure, sem segredo
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.ARM_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.ARM_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+defaults:
+  run:
+    working-directory: infra
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  plan:
+    needs: validate
+    # A credencial federada só vale para a branch main; PRs só validam.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - run: terraform init -input=false -backend-config="storage_account_name=${{ vars.TF_STATE_SA }}"
+      - run: terraform plan -input=false
+
+  apply:
+    needs: plan
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - run: terraform init -input=false -backend-config="storage_account_name=${{ vars.TF_STATE_SA }}"
+      - run: terraform apply -input=false -auto-approve
+
+  destroy:
+    needs: plan
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - run: terraform init -input=false -backend-config="storage_account_name=${{ vars.TF_STATE_SA }}"
+      - run: terraform destroy -input=false -auto-approve
