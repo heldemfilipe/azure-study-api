@@ -197,3 +197,115 @@ resource "azurerm_cosmosdb_sql_role_assignment" "app" {
   principal_id        = azurerm_user_assigned_identity.app.principal_id
   scope               = azurerm_cosmosdb_account.main.id
 }
+
+# ---------------------------------------------------------------------------
+# Execução: Container Apps (equivale ao ECS Fargate / App Runner)
+# ---------------------------------------------------------------------------
+# O "environment" é a fronteira de rede e de logs compartilhada pelos apps.
+# Ele manda os logs para o Log Analytics (tabelas ContainerAppConsoleLogs_CL etc.).
+resource "azurerm_container_app_environment" "main" {
+  name                       = "cae-${var.prefix}-${var.env}"
+  location                   = data.azurerm_resource_group.app.location
+  resource_group_name        = data.azurerm_resource_group.app.name
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+  tags                       = local.tags
+}
+
+resource "azurerm_container_app" "api" {
+  name                         = "ca-study-api"
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  resource_group_name          = data.azurerm_resource_group.app.name
+  revision_mode                = "Single" # uma revisão ativa por vez; "Multiple" permite canary
+  tags                         = local.tags
+
+  # O app usa a managed identity criada acima para tudo: puxar a imagem, ler o
+  # segredo e acessar o Cosmos DB. Nenhuma senha em lugar nenhum.
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.app.id]
+  }
+
+  # Puxa a imagem do ACR com a identidade (papel AcrPull), sem usuário/senha do registry.
+  registry {
+    server   = azurerm_container_registry.main.login_server
+    identity = azurerm_user_assigned_identity.app.id
+  }
+
+  # O segredo NÃO é copiado para o Terraform nem para o app: o Container Apps busca
+  # no Key Vault em tempo de execução, usando a identidade (papel Secrets User).
+  # versionless_id = sempre a versão mais recente do segredo.
+  secret {
+    name                = "demo-api-key"
+    identity            = azurerm_user_assigned_identity.app.id
+    key_vault_secret_id = azurerm_key_vault_secret.demo.versionless_id
+  }
+
+  template {
+    min_replicas = 0 # escala a zero: sem tráfego, sem réplica, sem custo de CPU
+    max_replicas = 2
+
+    container {
+      name   = "api"
+      image  = var.image
+      cpu    = 0.25
+      memory = "0.5Gi"
+
+      env {
+        name  = "COSMOS_ENDPOINT"
+        value = azurerm_cosmosdb_account.main.endpoint
+      }
+      env {
+        name  = "COSMOS_DATABASE"
+        value = azurerm_cosmosdb_sql_database.main.name
+      }
+      # Diz à biblioteca de identidade QUAL managed identity usar (há uma só, mas é
+      # explícito e evita ambiguidade).
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.app.client_id
+      }
+      env {
+        name        = "DEMO_API_KEY"
+        secret_name = "demo-api-key"
+      }
+    }
+  }
+
+  ingress {
+    external_enabled = true
+    target_port      = 80 # simplificação de estudo: a imagem inicial e a API escutam na 80
+
+    traffic_weight {
+      percentage      = 100
+      latest_revision = true
+    }
+  }
+
+  # Os papéis precisam existir ANTES do app subir; senão o primeiro start falha.
+  depends_on = [
+    azurerm_role_assignment.app_acr_pull,
+    azurerm_role_assignment.app_kv_user,
+    azurerm_cosmosdb_sql_role_assignment.app,
+  ]
+
+  # O ACR nasce vazio, então o app sobe com uma imagem pública de exemplo. Depois o
+  # pipeline publica a imagem da API e atualiza o app; o Terraform não deve desfazer.
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Observabilidade: auditoria do Key Vault no Log Analytics
+# ---------------------------------------------------------------------------
+# Logs de RECURSO (Key Vault, Cosmos...) não vão sozinhos para o Log Analytics: é
+# preciso um diagnostic setting. (Os logs do Container Apps já vão pelo environment.)
+resource "azurerm_monitor_diagnostic_setting" "kv" {
+  name                       = "to-log-analytics"
+  target_resource_id         = azurerm_key_vault.main.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+
+  enabled_log {
+    category = "AuditEvent"
+  }
+}
